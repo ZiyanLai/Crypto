@@ -218,7 +218,9 @@ class DeMarkSequence(Indicator):
         sub = self.daily_data.iloc[window_start:window_end]
         return sub["high"].max(), sub["low"].min()
     
-    def check_setup(self, i, side, count, lookback):
+    def check_setup(self, i, side, count=None, lookback=None):
+        if not count: count = self.setup_count
+        if not lookback: lookback = self.setup_lookback
         setup_start, setup_end = i-count, i
         if setup_start-lookback < 0: return False    
         window = self.daily_data.iloc[setup_start:setup_end]
@@ -282,19 +284,18 @@ class DeMarkSequence(Indicator):
             oppo_univ_countdown_period = self.univ_buy_countdown_period
 
         if not isSetup:
-            if self.check_setup(i, side, self.setup_count, self.setup_lookback): 
+            if self.check_setup(i, side): 
                 self.setup(i, t, side, "S", univ_countdown_period)
         elif isSetup:
             if countdown < countdown_period:
                 if self.__check_setup_trend(i, setupInd, side):
                     self.cancel_setup(t, side)
                     return 
-                if self.check_setup(i, opposite_side, self.setup_count, self.setup_lookback):
+                if self.check_setup(i, opposite_side):
                     self.cancel_setup(t, side)
                     self.setup(i, t, opposite_side, "S", oppo_univ_countdown_period)
                     return 
-                if i != setupInd and self.check_setup(i, side, self.setup_count, self.setup_lookback) \
-                                 and self.__check_recycle(i, setupInd):
+                if i != setupInd and self.check_setup(i, side) and self.__check_recycle(i, setupInd):
                     self.__recycle(i, t, side)
             self.__check_countdown(i, t, side)
     
@@ -326,10 +327,11 @@ class EnhancedDeMark(DeMarkSequence):
     def __init__(self, hourly_data=None, 
                        setup_lookback=4, setup_count=9, 
                        buy_countdown_period=13, sell_countdown_period=13, 
+                       buy_early_countdown_period=7, sell_early_countdown_period=9, 
                        notional=10000):
         super().__init__(hourly_data, setup_lookback, setup_count, buy_countdown_period, sell_countdown_period, notional)
-        self.buy_early_countdown_period = 7
-        self.sell_early_countdown_period = 9
+        self.buy_early_countdown_period = buy_early_countdown_period
+        self.sell_early_countdown_period = sell_early_countdown_period
         self.prevWeightedPrice = None
         self.bollingbands = BollingerBands(hourly_data, 
                                            alpha=0.2, 
