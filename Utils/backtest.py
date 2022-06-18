@@ -19,7 +19,8 @@ central = timezone("US/Central")
 
 class Backtester:
     def __init__(self, Strategy, hourly_data=None, ticker=None, 
-                       start=None, end=None, days=None, forceOptimize=None, benchmark=pd.DataFrame()):
+                       start=None, end=None, days=None, forceOptimize=None, optmizeLookBackPeriods=90,
+                       benchmark=pd.DataFrame()):
         if not isinstance(hourly_data, pd.DataFrame) and not ticker:
             raise Exception("Need to provide a valid ticker, or provide hourly data.")
         if isinstance(hourly_data, pd.DataFrame):
@@ -38,10 +39,10 @@ class Backtester:
         self.typicalPrice = self.hourly_data.resample("1d").apply(self.__get_trading_price)
         self.notional = 10000
         self.transactionCost = 0.0145 #percentage
-        self.tqdm_disable = False
-        self.preOptimizing = False
-        self.optimizing = False
-        self.optimizeLookbackPeriods = 60
+        self.__tqdm_disable = False
+        self.__preOptimizing = False
+        self.__optimizing = False
+        self.optimizeLookbackPeriods = optmizeLookBackPeriods
         if len(benchmark):
             self.benchmark = benchmark
         else:
@@ -96,19 +97,13 @@ class Backtester:
         optParams.index = newIndex
         optParams.loc[self.strategy.daily_data.index.min()] = optParams.iloc[0]
         optParams = optParams.sort_index(ascending=True)
-        # fullOptParams.index = newIndex
-        # for t in self.strategy.daily_data.index:
-        #     if t not in newIndex:
-        #         fullOptParams.loc[t] = np.nan
-        # fullOptParams = fullOptParams.sort_index(ascending=True)
-        # fullOptParams = fullOptParams.bfill().ffill()
         return optParams
 
     def base_start(self):
         self.strategy = self.__Strategy(hourly_data=self.hourly_data,
                                         notional=self.notional)
         self.capital = 0
-        self.optParams = self.__format_params()
+        self.__optParams = self.__format_params()
         self.tracker = pd.DataFrame(0, index=self.strategy.daily_data.index,
                                        columns=["quantity","pnl","cum pnl","price","buy","sell","stoploss"], 
                                        dtype=np.float64)
@@ -121,13 +116,15 @@ class Backtester:
         return tp.mean()
     
     def generate_signal(self):
-        for i, t in enumerate(tqdm(self.tracker.index, desc="Generating Signal", disable=self.tqdm_disable)):
-            if self.preOptimizing and i >= len(self.tracker)-self.optimizeLookbackPeriods:
+        for i, t in enumerate(tqdm(self.tracker.index, desc="Generating Signal", disable=self.__tqdm_disable)):
+            # if self.__preOptimizing and i >= len(self.tracker)-self.optimizeLookbackPeriods:
+            if self.__preOptimizing and t >= self.__optStartDate:
                 return
-            if self.optimizing and i < len(self.tracker)-self.optimizeLookbackPeriods:
+            # if self.__optimizing and i < len(self.tracker)-self.optimizeLookbackPeriods:
+            if self.__optimizing and t < self.__optStartDate:
                 continue
-            if t in self.optParams.index:
-                params = self.optParams.loc[t]
+            if t in self.__optParams.index:
+                params = self.__optParams.loc[t]
                 self.__update_params(params)
             self.strategy.generate_signal(i,t,"buy")
             self.strategy.generate_signal(i,t,"sell")
@@ -164,8 +161,10 @@ class Backtester:
                int(buy_countdown_period), int(sell_countdown_period), 
                small_CI, big_CI, alpha]
 
-        self.fullOptParams.iloc[-self.optimizeLookbackPeriods:] = row
-        self.__base_backtest()
+        self.__optParams.loc[self.__optStartDate] = row
+        self.__optParams = self.__optParams.sort_index(ascending=True)
+        # self.fullOptParams.iloc[-self.optimizeLookbackPeriods:] = row
+        self.base_backtest()
         opt_pnl = self.tracker["cum pnl"][-1]
         opt_ret = opt_pnl / self.capital
         score = 0.5*opt_ret - 0.25*self.__downside_beta(self.tracker) + 0.25*self.__sortino_ratio(self.tracker)
@@ -178,11 +177,13 @@ class Backtester:
         return -score
     
     def optimize(self):
-        self.tqdm_disable = True
-        self.preOptimizing = True
+        self.__tqdm_disable = True
+        self.__optStartDate = (datetime.today()-timedelta(days=self.optimizeLookbackPeriods)).replace(hour=0,minute=0,second=0,microsecond=0)
+        self.__optParams = self.__optParams[self.__optParams.index<self.__optStartDate]
+        self.__preOptimizing = True
         self.generate_signal()
-        self.preOptimizing = False
-        self.optimizing = True
+        self.__preOptimizing = False
+        self.__optimizing = True
         previousModel = deepcopy(self)
         print("Optimizing parameters...")
         ranges = (slice(3, 4.1, 1), slice(7, 9.1, 1),
@@ -190,8 +191,8 @@ class Backtester:
                   slice(10, 13.1, 1), slice(10, 13.1, 1), 
                   slice(0.65, 0.86, 0.05), slice(0.8, 0.96, 0.05), slice(0.1, 0.31, 0.2))
         params = brute(self.__optimize_objective, ranges=ranges, args=(previousModel,))
-        self.tqdm_disable = False
-        self.optimizing = False
+        self.__tqdm_disable = False
+        self.__optimizing = False
         return params
     
     def base_backtest(self):
@@ -205,6 +206,10 @@ class Backtester:
             pnl = quantity * (price-prev_price)
             buyUnit = self.tracker.loc[t,"buy"]/2
             sellUnit = self.tracker.loc[t,"sell"]/2
+            if pnl <= -self.notional*0.05 and sellUnit == 0:
+                self.tracker.loc[t,"stoploss"] = pnl
+                self.tracker.loc[t,"sell"] = (1/4)*quantity*price/self.notional
+                quantity /= 4
             if buyUnit != 0:
                 buyQuantity = buyUnit*self.notional / price
                 self.capital += buyUnit*self.notional
@@ -378,6 +383,9 @@ class Trader(Backtester):
             price = self.tracker.loc[t,"price"]
             pnl = totalQuantity * (price-prev_price)
             quantity = self.tracker.loc[t,"quantity"]
+            if pnl <= -self.notional*0.05:
+                self.tracker.loc[t,"stoploss"] = pnl
+
             if quantity != 0:
                 self.capital += abs(quantity)*price
                 totalQuantity += quantity        
@@ -385,8 +393,6 @@ class Trader(Backtester):
                     self.tracker.loc[t,"buy"] = abs(quantity)
                 elif quantity < 0:
                     self.tracker.loc[t,"sell"] = abs(quantity)
-            if pnl <= -self.notional*0.10:
-                self.tracker.loc[t,"stoploss"] = pnl
                 
             prev_price = price
             self.tracker.loc[t,"quantity"] = totalQuantity
