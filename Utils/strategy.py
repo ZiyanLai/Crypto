@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import scipy.stats as st
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from scipy.integrate import quad
 from pdb import set_trace as bp
 
@@ -406,36 +406,39 @@ class EnhancedDeMark(DeMarkSequence):
         bollingbandsSignal = self.bollingbands.signal.loc[t]
         price = self.daily_data.loc[t,"close"]
         two_lag_price = self.daily_data.iloc[i-2]["close"]
-        countdown_period = self.buy_countdown_period if side == "buy" else self.sell_countdown_period
+        # countdown_period = self.buy_countdown_period if side == "buy" else self.sell_countdown_period
         if side == "buy":
-#             if (not self.isSetupBuy) and (demarkSignal["buy countdown"] < self.countdown_period) and (price < bollingbandsSignal["BigDown"]):
-#                 self.__early_setup(i, t, "buy")
-            if (not self.isSetupBuy) and (self.signal.loc[t, "buy countdown"] < countdown_period):
+            # if (not self.isSetupBuy) and (self.signal.loc[t, "buy countdown"] < countdown_period):
+            #     qKurt, qSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.3, "skew")
+            #     kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
+            #     if kurt <= qKurt and skew <= qSkew and self.check_setup(i, side, 3, 1): 
+            #         self.__early_setup(i, t, "buy")
+            
+            # if t >= pd.to_datetime(date(2021,12,29)):
+                # print("")
+            if self.signal.loc[t,"buy"] == 0:
                 qKurt, qSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.3, "skew")
                 kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
                 if kurt <= qKurt and skew <= qSkew and self.check_setup(i, side, 3, 1): 
-                    self.__early_setup(i, t, "buy")
-            if self.signal.loc[t, "buy countdown"] >= countdown_period:
+                    if not self.isSetupBuy:
+                        self.__early_setup(i, t, "buy")
+                    else:
+                        self.buy_countdown_period = self.buy_early_countdown_period
+            if self.signal.loc[t, "buy countdown"] >= self.buy_countdown_period:
                 if price > bollingbandsSignal["SmallDown"] and price < bollingbandsSignal["SmallUp"]:
                     self.__recover_previous_setup(t, "buy")
 #                 elif price > bollingbandsSignal["BigUp"]:
 #                     self.signal.loc[t, "buy"] = 0.5
 #                 elif price < bollingbandsSignal["BigDown"]:
 #                     self.signal.loc[t, "buy"] = 1.5
-            if self.countdownBuy >= countdown_period-3:
+            if self.countdownBuy >= self.buy_countdown_period-3:
                 if price/two_lag_price-1 >= 0.05:
-#                 if price >= self.daily_data.iloc[i-2]["high"]:
                     self.signal.loc[t, "buy countdown"] = self.countdownBuy
                     self.reset("buy")
                     self.signal.loc[t, "buy"] = 0.8
                     
             if self.signal.loc[t, "buy"] != 0:
-                # mKurt, mSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.5, "skew")
                 kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
-#                 if kurt <= mKurt and skew <= mSkew:
-#                     self.signal.loc[t, "buy"] += 0.5
-#                 elif kurt > mKurt and skew > mSkew:
-#                     self.signal.loc[t, "buy"] -= 0.5
                 if price < bollingbandsSignal["SmallDown"]:
                     size1 = self.sizing_func((price-bollingbandsSignal["SmallDown"])/bollingbandsSignal["SmallDown"], B=-7, M=0)
                 elif price > bollingbandsSignal["SmallUp"]:
@@ -448,26 +451,33 @@ class EnhancedDeMark(DeMarkSequence):
                 self.signal.loc[t, "buy"] *= (size1+size2+size3)/3
 
         elif side == "sell":
-#             if (not self.isSetupSell) and (demarkSignal["sell countdown"] < self.countdown_period) and (price > bollingbandsSignal["BigUp"]):
-#                 self.__early_setup(i, t, "sell")
-            if (not self.isSetupSell) and (self.signal.loc[t,"sell countdown"] < countdown_period):
+            # if (not self.isSetupSell) and (self.signal.loc[t,"sell countdown"] < self.sell_countdown_period):
+            #     qKurt, qSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.7, "skew")
+            #     kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
+            #     if kurt >= qKurt and skew >= qSkew and self.check_setup(i, side, 3, 1): 
+            #         self.__early_setup(i, t, "sell")
+            if self.signal.loc[t,"sell"] == 0:
                 qKurt, qSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.7, "skew")
                 kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
                 if kurt >= qKurt and skew >= qSkew and self.check_setup(i, side, 3, 1): 
-                    self.__early_setup(i, t, "sell")
-            if self.signal.loc[t,"sell countdown"] >= countdown_period:
+                    if not self.isSetupSell:
+                        self.__early_setup(i, t, "sell")
+                    else:
+                        self.sell_countdown_period = self.sell_early_countdown_period
+
+            if self.signal.loc[t,"sell countdown"] >= self.sell_countdown_period:
                 if price > bollingbandsSignal["SmallDown"] and price < bollingbandsSignal["SmallUp"]:
-                    self.__recover_previous_setup(t, "sell")
+                    self.__recover_previous_setup(t,"sell")
 #                 elif price < bollingbandsSignal["BigDown"]:
 #                     self.signal.loc[t, "sell"] = 0.5
 #                 elif price > bollingbandsSignal["BigUp"]:
 #                     self.signal.loc[t, "sell"] = 1.5
-            if self.countdownSell >= countdown_period-3:
+            if self.countdownSell >= self.sell_countdown_period-3:
                 if price/two_lag_price-1 <= -0.05:
 #                 if price < self.daily_data.iloc[i-2]["low"]:
-                    self.signal.loc[t, "sell countdown"] = self.countdownSell
+                    self.signal.loc[t,"sell countdown"] = self.countdownSell
                     self.reset("sell")
-                    self.signal.loc[t, "sell"] = 0.8
+                    self.signal.loc[t,"sell"] = 0.8
             
             if self.countdownSell == 1:
                 weightedPrice = self.get_weight_buying_price()                                    
@@ -475,13 +485,9 @@ class EnhancedDeMark(DeMarkSequence):
                     self.signal.loc[t, "sell countdown"] = 0
                     self.countdownSell = 0
 
-            if self.signal.loc[t, "sell"] != 0:
+            if self.signal.loc[t,"sell"] != 0:
                 # mKurt, mSkew = self.get_moments_quantile(t, 0.5, "kurt"), self.get_moments_quantile(t, 0.5, "skew")
                 kurt, skew = bollingbandsSignal["kurt"], bollingbandsSignal["skew"]
-#                 if kurt >= mKurt and skew >= mSkew:
-#                     self.signal.loc[t, "sell"] += 0.5
-#                 elif kurt < mKurt and skew < mSkew:
-#                     self.signal.loc[t, "sell"] -= 0.5
                 if price < bollingbandsSignal["SmallDown"]:
                     size1 = self.sizing_func((price-bollingbandsSignal["SmallDown"])/bollingbandsSignal["SmallDown"], B=7, M=0)
                 elif price > bollingbandsSignal["SmallUp"]:

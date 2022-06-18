@@ -49,14 +49,13 @@ class Backtester:
             dpi = DataSourcer("dpi").get_daily_data()
             self.benchmark = dpi.resample("1d").last()["prices"]
 
-        self.optParams = pd.read_json("params/opt_params")
+        self.jsonOptParams = pd.read_json("params/opt_params")
         self.base_start()
         if forceOptimize != False:
             if self.__to_optimize() or forceOptimize == True:
                 newParams = self.optimize()
-                self.optParams.loc[pd.to_datetime(datetime.today())] = newParams
-                self.optParams.to_json("params/opt_params")
-
+                self.jsonOptParams.loc[pd.to_datetime(datetime.today())] = newParams
+                self.jsonOptParams.to_json("params/opt_params")
 
     def __to_optimize(self):
         today = datetime.today().replace(hour=0,minute=0,second=0,microsecond=0)
@@ -69,15 +68,17 @@ class Backtester:
             target_opt_datetime = today.replace(day=1,hour=12,minute=0,second=0,microsecond=0)
         return recent_opt_datetime < target_opt_datetime
 
-    def update_params(self, params):
+    def __update_params(self, params):
         setup_lookback, setup_count, \
         buy_early_countdown_period, sell_early_countdown_period, \
         buy_countdown_period, sell_countdown_period, \
         small_CI, big_CI, alpha = params
         self.strategy.setup_lookback = int(setup_lookback)
         self.strategy.setup_count = int(setup_count)
-        self.strategy.univ_sell_countdown_period = self.strategy.sell_countdown_period = int(sell_countdown_period)
-        self.strategy.univ_buy_countdown_period = self.strategy.buy_countdown_period = int(buy_countdown_period)
+        self.strategy.univ_sell_countdown_period = int(sell_countdown_period)
+        self.strategy.univ_buy_countdown_period = int(buy_countdown_period)
+        self.strategy.sell_countdown_period = min(self.strategy.sell_countdown_period, int(sell_countdown_period))
+        self.strategy.buy_countdown_period = min(self.strategy.buy_countdown_period, int(buy_countdown_period))
         self.strategy.buy_early_countdown_period = int(buy_early_countdown_period)
         self.strategy.sell_early_countdown_period = int(sell_early_countdown_period)
         self.strategy.bollingbands.big_CI = big_CI
@@ -88,23 +89,26 @@ class Backtester:
         self.strategy.bollingbands.small_down_z = st.norm.ppf((1-small_CI)/2)
         self.strategy.bollingbands.alpha = alpha
 
-    def generate_params_df(self):
-        oldIndex = self.optParams.index
+    def __format_params(self):
+        oldIndex = self.jsonOptParams.index
         newIndex = [(t+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0) for t in oldIndex]
-        fullOptParams = self.optParams.copy()
-        fullOptParams.index = newIndex
-        for t in self.strategy.daily_data.index:
-            if t not in newIndex:
-                fullOptParams.loc[t] = np.nan
-        fullOptParams = fullOptParams.sort_index(ascending=True)
-        fullOptParams = fullOptParams.bfill().ffill()
-        return fullOptParams
-    
+        optParams = self.jsonOptParams.copy()
+        optParams.index = newIndex
+        optParams.loc[self.strategy.daily_data.index.min()] = optParams.iloc[0]
+        optParams = optParams.sort_index(ascending=True)
+        # fullOptParams.index = newIndex
+        # for t in self.strategy.daily_data.index:
+        #     if t not in newIndex:
+        #         fullOptParams.loc[t] = np.nan
+        # fullOptParams = fullOptParams.sort_index(ascending=True)
+        # fullOptParams = fullOptParams.bfill().ffill()
+        return optParams
+
     def base_start(self):
         self.strategy = self.__Strategy(hourly_data=self.hourly_data,
                                         notional=self.notional)
         self.capital = 0
-        self.fullOptParams = self.generate_params_df()
+        self.optParams = self.__format_params()
         self.tracker = pd.DataFrame(0, index=self.strategy.daily_data.index,
                                        columns=["quantity","pnl","cum pnl","price","buy","sell","stoploss"], 
                                        dtype=np.float64)
@@ -122,8 +126,9 @@ class Backtester:
                 return
             if self.optimizing and i < len(self.tracker)-self.optimizeLookbackPeriods:
                 continue
-            params = self.fullOptParams.loc[t]
-            self.update_params(params)
+            if t in self.optParams.index:
+                params = self.optParams.loc[t]
+                self.__update_params(params)
             self.strategy.generate_signal(i,t,"buy")
             self.strategy.generate_signal(i,t,"sell")
     
@@ -160,10 +165,10 @@ class Backtester:
                small_CI, big_CI, alpha]
 
         self.fullOptParams.iloc[-self.optimizeLookbackPeriods:] = row
-        self.base_backtest()
+        self.__base_backtest()
         opt_pnl = self.tracker["cum pnl"][-1]
         opt_ret = opt_pnl / self.capital
-        score = 0.5*opt_ret - 0.25*self.downside_beta(self.tracker) + 0.25*self.sortino_ratio(self.tracker)
+        score = 0.5*opt_ret - 0.25*self.__downside_beta(self.tracker) + 0.25*self.__sortino_ratio(self.tracker)
         self.__revert_to_previous_model(previousModel)
         # print(f"buy_early_countdown_period={buy_early_countdown_period}, sell_early_countdown_period={sell_early_countdown_period}, buy_countdown_period={buy_countdown_period}, sell_countdown_period={sell_countdown_period}, small_CI={small_CI}, big_CI={big_CI}, alpha={alpha}, cum return={opt_ret}, score={score}")
         print(int(setup_lookback), int(setup_count), 
@@ -216,7 +221,7 @@ class Backtester:
         self.tracker["cum pnl"] = self.tracker["pnl"].cumsum()
         self.tracker["return"] = self.tracker["pnl"] / self.notional
 
-    def max_drawdown(self, tracker):
+    def __max_drawdown(self, tracker):
         cum_pnl = tracker["cum pnl"]
         peak = bottom = max_dd = 0
         peakInd = bottomInd = 0
@@ -232,7 +237,7 @@ class Backtester:
                 max_dd = max(max_dd, peak - bottom)
         return max_dd
     
-    def downside_beta(self, tracker):
+    def __downside_beta(self, tracker):
         benchmark_ret = np.log(self.benchmark).diff(1)
         joint_ind = np.intersect1d(tracker.index, benchmark_ret.index)
         benchmark_ret = benchmark_ret.loc[joint_ind]
@@ -243,7 +248,7 @@ class Backtester:
         model = sm.OLS(y, X).fit()
         return model.params.iat[1]
     
-    def sortino_ratio(self, tracker):
+    def __sortino_ratio(self, tracker):
         # start_date, end_date = tracker.index.min(), tracker.index.max()
         # start_date, end_date = tracker.index.min()-timedelta(days=1), tracker.index.max()
         # sub_benchmark = self.benchmark.loc[start_date:end_date]
@@ -297,7 +302,7 @@ class Backtester:
         ax1.legend(loc=2)
         ax2.legend(loc=2)
         ax4.legend(loc=1)
-        table_data = [[self.max_drawdown(aggregate_tracker), self.downside_beta(aggregate_tracker), self.sortino_ratio(aggregate_tracker), \
+        table_data = [[self.__max_drawdown(aggregate_tracker), self.__downside_beta(aggregate_tracker), self.__sortino_ratio(aggregate_tracker), \
                        self.tracker["cum pnl"].iat[-1], self.tracker["cum pnl"].iat[-1] / self.capital, \
                        aggregate_tracker["return"].mean(), aggregate_tracker["return"].std(), \
                        aggregate_tracker["return"].skew(), aggregate_tracker["return"].kurt()]]
@@ -326,18 +331,17 @@ class Trader(Backtester):
         super().__init__(Strategy, hourly_data=hourly_data, 
                          ticker=ticker, start=start, end=end, days=days, forceOptimize=forceOptimize)
         self.notion = Notion()
-        self.start()
+        self.__start()
 
-    def start(self):
-        super().base_start()
+    def __start(self):
+        self.base_start()
         self.closing_price = self.strategy.hourly_data["close"].resample("1d").last()
         index = [t.replace(hour=23) for t in self.closing_price.index[:-1]]
         index.append(self.strategy.hourly_data.index[-1])
         self.closing_price.index = index
         self.trades = self.notion.get_trading_history()
     
-    def display_today_signal(self):
-        today = self.strategy.signal.index.max()
+    def __display_today_signal(self):
         signal = self.strategy.signal
         table = pd.DataFrame(np.nan, columns=["Side", "Setup", "Countdown", "Curr Countdown", "Size"], index=["Status"])
         fill = False
@@ -362,7 +366,7 @@ class Trader(Backtester):
         self.generate_signal()
         self.tracker.index = self.closing_price.index
         self.tracker["price"] = self.closing_price
-        self.display_today_signal()
+        self.__display_today_signal()
         for t in self.trades.index:
             self.tracker.loc[t] = 0
             self.tracker.loc[t,"quantity"] = self.trades.loc[t,"quantity"]
@@ -381,7 +385,7 @@ class Trader(Backtester):
                     self.tracker.loc[t,"buy"] = abs(quantity)
                 elif quantity < 0:
                     self.tracker.loc[t,"sell"] = abs(quantity)
-            if pnl <= -self.notional*0.15:
+            if pnl <= -self.notional*0.10:
                 self.tracker.loc[t,"stoploss"] = pnl
                 
             prev_price = price
