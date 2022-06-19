@@ -145,9 +145,8 @@ class Backtester:
         return cond1 or cond2 or cond3 or cond4 or cond5 or cond6
     
     def __revert_to_previous_model(self, previousModel):
-        self.tracker = previousModel.tracker
-        self.strategy = previousModel.strategy        
-
+        self.tracker = previousModel.tracker.copy()
+        self.strategy = deepcopy(previousModel.strategy)
 
     def __optimize_objective(self, params, *args):
         setup_lookback, setup_count, \
@@ -160,7 +159,7 @@ class Backtester:
                int(buy_early_countdown_period), int(sell_early_countdown_period), 
                int(buy_countdown_period), int(sell_countdown_period), 
                small_CI, big_CI, alpha]
-
+        # row = [3, 7, 7, 7, 10, 11, 0.7500000000000001, 0.9500000000000001, 0.1]
         self.__optParams.loc[self.__optStartDate] = row
         self.__optParams = self.__optParams.sort_index(ascending=True)
         # self.fullOptParams.iloc[-self.optimizeLookbackPeriods:] = row
@@ -169,7 +168,6 @@ class Backtester:
         opt_ret = opt_pnl / self.capital
         score = 0.5*opt_ret - 0.25*self.__downside_beta(self.tracker) + 0.25*self.__sortino_ratio(self.tracker)
         self.__revert_to_previous_model(previousModel)
-        # print(f"buy_early_countdown_period={buy_early_countdown_period}, sell_early_countdown_period={sell_early_countdown_period}, buy_countdown_period={buy_countdown_period}, sell_countdown_period={sell_countdown_period}, small_CI={small_CI}, big_CI={big_CI}, alpha={alpha}, cum return={opt_ret}, score={score}")
         print(int(setup_lookback), int(setup_count), 
               int(buy_early_countdown_period), int(sell_early_countdown_period), 
               int(buy_countdown_period), int(sell_countdown_period), small_CI, big_CI, alpha, 
